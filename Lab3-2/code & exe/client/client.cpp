@@ -2,6 +2,7 @@
 #include <winsock2.h>
 #include <WS2tcpip.h>
 #include <fstream>
+#include <mutex>
 #include "segment.h"
 #pragma comment (lib, "ws2_32.lib")
 
@@ -13,11 +14,13 @@ int seq = 0; // 初始化序列号
 int addrLen = sizeof(clientAddr); // 用于UDP::recvfrom
 
 // lab3-2新增：
-int window_start = 0; // 滑动窗口的开始位置
-int next_send = 0; // 指向下一个要发送的序列号，即最大已发送但未确认的序列号+1
+int window_start = 0; // 滑动窗口的开始位置，即基序号
+int next_send = 0; // 指向下一个要发送的序列号
 bool isEnd = 0; // 判断是否接收完毕
 bool quickSend = 0; // 三次重复ACK快速重传
 clock_t msgTime = 0; // 报文分组重传时间
+int WINDOW_SIZE = 10; // 滑动窗口大小
+std::mutex mtx; // 互斥锁对象
 
 // 函数声明：
 bool shakeHands(); // UDP实现三次握手
@@ -33,7 +36,7 @@ int main()
 	WSADATA wsadata;
 	int res = WSAStartup(MAKEWORD(2, 2), &wsadata);
 	if (res != 0) {
-		cout << "winsock库初始化失败！";
+		std::cout << "winsock库初始化失败！";
 		return 1;
 	}
 
@@ -59,12 +62,15 @@ int main()
 
 	// 三次握手建立连接：
 	bool alive = shakeHands();
-	cout << "三次握手建立连接成功，现在可以选择上传文件或断开连接" << endl;
+	std::cout << "三次握手建立连接成功，现在可以选择上传文件或断开连接" << endl;
 	
 	// 开始文件传输
 
-	int which;
-	cout << "input 1-3 to transport 1-3.jpg or input 4 to transport helloworld.txt：";
+	int which,size;
+	std::cout << "input the window size you hope：";
+	cin >> size;
+	WINDOW_SIZE = size;
+	std::cout << "input 1-3 to transport 1-3.jpg or input 4 to transport helloworld.txt：";
 	cin >> which;
 	switch (which) 
 	{
@@ -73,12 +79,12 @@ int main()
 		case 3:sendFile("3.jpg"); break;
 		case 4:sendFile("helloworld.txt"); break;
 	}
-	cout << "已退出传输，准备四次挥手释放连接！" << endl;
+	std::cout << "已退出传输，准备四次挥手释放连接！" << endl;
 
 	//四次挥手释放连接：
 	waveHands();
 
-	cout << "已释放连接！" << endl;
+	std::cout << "已释放连接！" << endl;
 	WSACleanup();
 	system("pause");
 	return 0;
@@ -95,27 +101,27 @@ bool shakeHands()
 	int bytes = sendto(clientSocket, (char*)&message1, sizeof(message1), 0, (sockaddr*)&serverAddr, addrLen);
 	clock_t shake1 = clock();
 	if (bytes == 0) {
-		cout << "第一次握手时，信息发送发生错误！" << endl;
+		std::cout << "第一次握手时，信息发送发生错误！" << endl;
 		return false;
 	}
-	cout << "---------- 客户端已发送第一次握手的消息，等待第二次握手 ----------" << endl;
+	std::cout << "---------- 客户端已发送第一次握手的消息，等待第二次握手 ----------" << endl;
 
 	// 第二次握手，服务端发送信息到客户端，并把SYN和ACK置位：
 	while (true) {
 		int bytes = recvfrom(clientSocket, (char*)&message2, sizeof(message2), 0, (sockaddr*)&serverAddr, &addrLen);
 		if (bytes == 0) {
-			cout << "第二次握手时，信息接收发生错误！" << endl;
+			std::cout << "第二次握手时，信息接收发生错误！" << endl;
 			return false;
 		}
 		else if (bytes > 0) {
 			// 成功接收到信息，接下来检验校验和，SYN和ACK字段，以及seq：
 			if ((message2.flag && SYN) && (message2.flag && ACK) && message2.getCheck() && message2.ackNum == message1.seqNum) {
-				cout << "---------- 第二次握手成功！ ----------" << endl;
+				std::cout << "---------- 第二次握手成功！ ----------" << endl;
 				break;
 			}
 		}
 		if (clock() - shake1 >= MAX_WAIT_TIME) {
-			cout << "---------- 第一次握手超时，正在重新传输！ ----------" << endl;
+			std::cout << "---------- 第一次握手超时，正在重新传输！ ----------" << endl;
 			int bytes = sendto(clientSocket, (char*)&message1, sizeof(message1), 0, (sockaddr*)&serverAddr, addrLen);
 			shake1 = clock(); // 重新计时
 		}
@@ -127,7 +133,7 @@ bool shakeHands()
 	message3.seqNum = ++seq;
 	message3.setCheck();
 	bytes = sendto(clientSocket, (char*)&message3, sizeof(message3), 0, (sockaddr*)&serverAddr, addrLen);
-	cout << "---------- 客户端已发送第三次握手的消息，已准备就绪 ----------" << endl;
+	std::cout << "---------- 客户端已发送第三次握手的消息，已准备就绪 ----------" << endl;
 	return true;
 }
 
@@ -141,11 +147,11 @@ bool waveHands()
 	message1.setCheck();
 	int bytes = sendto(clientSocket, (char*)&message1, sizeof(message1), 0, (sockaddr*)&serverAddr, addrLen);
 	if (bytes == 0) {
-		cout << "第一次挥手时，信息发送发生错误！" << endl;
+		std::cout << "第一次挥手时，信息发送发生错误！" << endl;
 		return false;
 	}
 	clock_t wave1 = clock();
-	cout << "---------- 客户端已发送第一次挥手的消息，等待第二次挥手 ----------" << endl;
+	std::cout << "---------- 客户端已发送第一次挥手的消息，等待第二次挥手 ----------" << endl;
 
 	// 第二次挥手，服务端向客户端，ACK置位：
 	while (true) {
@@ -153,12 +159,12 @@ bool waveHands()
 		if (bytes > 0) {
 			// 成功接收到信息，接下来检验校验和，ACK字段，以及seq：
 			if (message2.getCheck() && (message2.flag && ACK) && message2.ackNum == message1.seqNum) {
-				cout << "---------- 第二次挥手成功！ ----------" << endl;
+				std::cout << "---------- 第二次挥手成功！ ----------" << endl;
 				break;
 			}
 		}
 		if (clock() - wave1 >= MAX_WAIT_TIME) {
-			cout << "---------- 第一次挥手超时，正在重新传输！ ----------" << endl;
+			std::cout << "---------- 第一次挥手超时，正在重新传输！ ----------" << endl;
 			bytes = sendto(clientSocket, (char*)&message1, sizeof(message1), 0, (sockaddr*)&serverAddr, addrLen);
 			wave1 = clock();
 		}
@@ -169,7 +175,7 @@ bool waveHands()
 		bytes = recvfrom(clientSocket, (char*)&message3, sizeof(message3), 0, (sockaddr*)&serverAddr, &addrLen);
 		if (bytes > 0) {
 			if (message3.getCheck() && (message3.flag && FIN) && (message3.flag && ACK)) {
-				cout << "---------- 第三次挥手成功！ ----------" << endl;
+				std::cout << "---------- 第三次挥手成功！ ----------" << endl;
 				break;
 			}
 		}
@@ -181,7 +187,7 @@ bool waveHands()
 	message4.ackNum = message3.seqNum;
 	message4.setCheck();
 	bytes = sendto(clientSocket, (char*)&message4, sizeof(message4), 0, (sockaddr*)&serverAddr, addrLen);
-	cout << "---------- 客户端已发送第四次挥手的消息，资源准备关闭！ ----------" << endl;
+	std::cout << "---------- 客户端已发送第四次挥手的消息，资源准备关闭！ ----------" << endl;
 
 	// 客户端还必须等待2*MSL，防止最后一个ACK还未到达：
 	clock_t waitFor2MSL = clock();
@@ -194,27 +200,31 @@ bool waveHands()
 			waitFor2MSL = clock();
 		}
 	}
-	cout << "---------- 资源释放完毕，连接断开！ ----------" << endl;
+	std::cout << "---------- 资源释放完毕，连接断开！ ----------" << endl;
 }
 
+// lab3-2未用
 bool sendSegment(Message& sendMessage)
 {
 	// 发送报文段，并开始计时
 	sendto(clientSocket, (char*)&sendMessage, sizeof(sendMessage), 0, (sockaddr*)&serverAddr, addrLen);
 	clock_t msgTime = clock();
-	cout << "客户端发送了 seq = " << sendMessage.seqNum << " 的报文段" << endl;
+	std::cout << "客户端发送了 seq = " << sendMessage.seqNum << " 的报文段" << endl;
 	Message recvMessage;
 	while (true) {
 		int bytes = recvfrom(clientSocket, (char*)&recvMessage, sizeof(recvMessage), 0, (sockaddr*)&serverAddr, &addrLen);
 		if (bytes > 0) {
 			// 成功收到消息，检查ACK和seq，但无需向服务端回复一个ACK
 			if ((recvMessage.flag && ACK) && (recvMessage.ackNum == sendMessage.seqNum)) {
-				cout << "客户端收到了服务端发来的 ack = " << recvMessage.ackNum << " 的确认报文" << endl;
+				{
+					std::lock_guard<std::mutex> lock(mtx);
+					std::cout << "客户端收到了服务端发来的 ack = " << recvMessage.ackNum << " 的确认报文" << endl;
+				}
 				return true;
 			}
 		}
 		if (clock() - msgTime >= MAX_WAIT_TIME) {
-			cout << "seq = " << sendMessage.seqNum << " 的报文段发送超时，客户端正在重新传输 ......" << endl;
+			std::cout << "seq = " << sendMessage.seqNum << " 的报文段发送超时，客户端正在重新传输 ......" << endl;
 			sendto(clientSocket, (char*)&sendMessage, sizeof(sendMessage), 0, (sockaddr*)&serverAddr,addrLen);
 			msgTime = clock();
 		}
@@ -270,18 +280,23 @@ bool sendFile(string fileName)
 					sendMessage.data[j] = transFile[(next_send - 1) * MSS + j];
 				sendMessage.setCheck();
 			}
-			sendto(clientSocket, (char*)&sendMessage, sizeof(sendMessage), 0, (SOCKADDR*)&serverAddr, addrLen);
-			cout << "客户端已发送 seq = " << sendMessage.seqNum << " 的报文段！" << endl;
-			// 窗口滑动，重新开始计时
-			if (window_start == next_send)
-				msgTime = clock();
-			next_send++;
-			cout << "目前存在已发送但未收到ACK的报文段数量：" << next_send - window_start << "，还未发送的报文段数量：" << WINDOW_SIZE - (next_send - window_start) << endl;
+			{
+				std::lock_guard<std::mutex> lock(mtx);
+				sendto(clientSocket, (char*)&sendMessage, sizeof(sendMessage), 0, (SOCKADDR*)&serverAddr, addrLen);
+				std::cout << "客户端已发送 seq = " << sendMessage.seqNum << " 的报文段！" << endl;
+				// 某个滑动窗口初始化时开始计时
+				if (window_start == next_send)
+					msgTime = clock();
+				// 发送一个报文段，next_send 后移
+				next_send++;
+				std::cout << "【滑动窗口信息打印】窗口大小：" << WINDOW_SIZE << "，目前存在已发送但未收到ACK的报文段数量：" << next_send - window_start << "，还未发送的报文段数量：" << WINDOW_SIZE - (next_send - window_start) << endl;
+			}
 		}
+		// 当前滑动窗口超时或者收到服务端三次重复ACK时，把[window_start,next_send]区间内报文全部重传
 		if (clock() - msgTime >= MAX_WAIT_TIME || quickSend == true) {
 			Message sendMessage;
 			sendMessage.setPort(CLIENT_PORT, SERVER_PORT);
-			// 超时，重传窗口里的所有报文：
+			// 重传[window_start,next_send]区间内的全部报文
 			for (int i = 0; i < next_send - window_start; i++) {
 				if (window_start == 0) { // 文件信息报文端丢失
 					sendMessage.size = fileSize;
@@ -305,50 +320,53 @@ bool sendFile(string fileName)
 					sendMessage.setCheck();
 				}
 				sendto(clientSocket, (char*)&sendMessage, sizeof(sendMessage), 0, (SOCKADDR*)&serverAddr, addrLen);
-				cout << "客户端已【重新发送超时的报文段】 seq = " << sendMessage.seqNum << endl;
+				std::cout << "客户端已【重新发送超时的报文段】 seq = " << sendMessage.seqNum << endl;
 			}
 			msgTime = clock(); //重新计时
 			quickSend = false;
 		}
-		if (isEnd)
-			break;
+		if (isEnd) break;
 	}
 	CloseHandle(ackThread);
 	clock_t endTime = clock();
-	cout << "文件" << fileName << "的总传输时间为：" << (endTime - startTime) / CLOCKS_PER_SEC << "s" << endl;
-	cout << "传输过程的吞吐率为:" << ((float)fileSize) / ((endTime - startTime) / CLOCKS_PER_SEC) << "byte/s" << endl << endl;
+	std::cout << "文件" << fileName << "的总传输时间为：" << (endTime - startTime) / CLOCKS_PER_SEC << "s" << endl;
+	std::cout << "传输过程的吞吐率为:" << ((float)fileSize) / ((endTime - startTime) / CLOCKS_PER_SEC) << "byte/s" << endl << endl;
 	return true;
 }
 DWORD WINAPI recvThread(PVOID lpParam)
 {
 	int* pointer = (int*)lpParam;
 	int sum = *pointer; // 得到总的消息数量
-	int recv_ack = -1;
+	int recv_ack = -1; // 记录收到的ACK
 	int count = 0;
 	while (true) {
-		Message recvMessage;
-		int bytes = recvfrom(clientSocket, (char*)&recvMessage, sizeof(recvMessage), 0, (SOCKADDR*)&serverAddr, &addrLen);
-		if (bytes > 0 && recvMessage.getCheck()) {
-			if (recvMessage.ackNum >= window_start) // 落入窗口内部，证明不是重发的报文段
-				window_start = recvMessage.ackNum + 1;
-			if (window_start != next_send) {
-				msgTime = clock();
+		{
+			std::lock_guard<std::mutex> lock(mtx);
+			Message recvMessage;
+			int bytes = recvfrom(clientSocket, (char*)&recvMessage, sizeof(recvMessage), 0, (SOCKADDR*)&serverAddr, &addrLen);
+			if (bytes > 0 && recvMessage.getCheck()) {
+				// 收到服务端传来的ACK，则窗口右移
+				if (recvMessage.ackNum >= window_start)
+					window_start = recvMessage.ackNum + 1;
+				// 能收到客户端发来的ACK，证明未超时
+				if (window_start != next_send)
+					msgTime = clock();
+				std::cout << "客户端收到了服务端发来的 ack = " << recvMessage.ackNum << " 的确认报文" << endl;
+				std::cout << "【滑动窗口信息打印】窗口大小：" << WINDOW_SIZE << "，目前存在已发送但未收到ACK的报文段数量：" << next_send - window_start << "，还未发送的报文段数量：" << WINDOW_SIZE - (next_send - window_start) << endl;
+
+				if (recvMessage.ackNum == sum - 1) {
+					std::cout << "客户端接收完毕！" << endl;
+					isEnd = true;
+					return 0;
+				}
+				// 记录当前ACK，如果下一次还是这个ACK就计数
+				if (recv_ack != recvMessage.ackNum) {
+					recv_ack = recvMessage.ackNum;
+					count = 0;
+				}
+				else count++;
+				if (count == 3) quickSend = true;
 			}
-			cout << "客户端收到了服务端发来的 ack = " << recvMessage.ackNum << " 的确认报文" << endl;
-			cout << "目前存在已发送但未收到ACK的报文段数量：" << next_send - window_start << "，还未发送的报文段数量：" << WINDOW_SIZE - (next_send - window_start) << endl;
-			if (recvMessage.ackNum == sum - 1) {
-				cout << "客户端接收完毕！" << endl;
-				isEnd = true;
-				return 0;
-			}
-			if (recv_ack != recvMessage.ackNum) {
-				recv_ack = recvMessage.ackNum;
-				count = 0;
-			}
-			else
-				count++;
-			if (count == 3)
-				quickSend = true;
 		}
 	}
 	return 0;
